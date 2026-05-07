@@ -1,7 +1,6 @@
 package stun
 
 import (
-	"errors"
 	"math/rand"
 	"net"
 	"os"
@@ -74,6 +73,7 @@ func TestBindingRequestTimeout(t *testing.T) {
 
 	bindReq := NewBindingAgent(NewBindingAgentConfig(NoopLoggerFunc, nil))
 	bindReq.SetConn(conn)
+	bindReq.Receive()
 
 	_, err = bindReq.SendRequest(true)
 	t.Logf("Error: %v", err)
@@ -82,8 +82,6 @@ func TestBindingRequestTimeout(t *testing.T) {
 		t.Error("Expected error but got none")
 		return
 	}
-
-	err = errors.Unwrap(err)
 
 	if !os.IsTimeout(err) {
 		t.Errorf("Expected timeout error, got: %v", err)
@@ -139,7 +137,7 @@ func TestBasicIceBindingRequest(t *testing.T) {
 			logger := server.config.Logger
 			bindReq := NewBindingAgent(NewControllingICEBindingAgentConfig(logger, tc.clientAuth, 0))
 			bindReq.SetConn(conn)
-
+			bindReq.Receive()
 			// Send binding request
 			result, err := bindReq.SendRequest(true)
 			if err != nil {
@@ -239,7 +237,7 @@ func TestIceBindingRequestAttributes(t *testing.T) {
 			// Create bind request
 			bindReq := NewBindingAgent(NewICEBindingAgentConfig(NoopLoggerFunc, nil, tc.attrs))
 			bindReq.SetConn(conn)
-
+			bindReq.Receive()
 			// Send binding request
 			result, err := bindReq.SendRequest(true)
 			if err != nil {
@@ -300,6 +298,7 @@ func TestConcurrentBindingRequests(t *testing.T) {
 		RemotePassword: "PASS2",
 	}, nil))
 	bindReq1.SetConn(peer1)
+	bindReq1.Receive()
 
 	bindReq2 := NewBindingAgent(NewICEBindingAgentConfig(NoopLoggerFunc, &IceAuth{
 		LocalUfrag:     "RFRAG",
@@ -308,6 +307,7 @@ func TestConcurrentBindingRequests(t *testing.T) {
 		RemotePassword: "PASS1",
 	}, nil))
 	bindReq2.SetConn(peer2)
+	bindReq2.Receive()
 
 	// Send binding requests concurrently
 	var (
@@ -415,6 +415,7 @@ func TestICENominatedFlow(t *testing.T) {
 		RemotePassword: "PASS2",
 	}, 0x7e0000ff))
 	agent1.SetConn(peer1)
+	agent1.Receive()
 
 	agent2 := NewBindingAgent(NewControlledICEBindingAgentConfig(NoopLoggerFunc, &IceAuth{
 		LocalUfrag:     "NOM_R",
@@ -423,8 +424,8 @@ func TestICENominatedFlow(t *testing.T) {
 		RemotePassword: "PASS1",
 	}, 0x7e0000fe))
 	agent2.SetConn(peer2)
-
 	agent2.Receive()
+
 	// Give the receive goroutine a chance to block in Read before we send.
 	time.Sleep(50 * time.Millisecond)
 

@@ -17,10 +17,12 @@ limitations under the License.
 package stun
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,6 +52,16 @@ type BindingAgent struct {
 	requests  *sync.Map
 }
 
+// requestContext wraps a request context for out of band communication.
+// It is used to store the result of a request and the error that occurred
+// and to cancel the request if it is timed out.
+type requestContext struct {
+	done   <-chan struct{}
+	cancel context.CancelFunc
+	result *BindingResult
+	err    error
+}
+
 func NewBindingAgent(config *BindingAgentConfig) *BindingAgent {
 	agent := &BindingAgent{
 		requests: &sync.Map{},
@@ -74,6 +86,7 @@ func (b *BindingAgent) Receive() {
 		return
 	}
 	go b.receive()
+	runtime.Gosched()
 }
 
 func (b *BindingAgent) logger() LoggerFunc {
@@ -164,12 +177,19 @@ func (b *BindingAgent) receive() {
 			continue
 		}
 		if err := ValidateMethodAndClass(message.Header.Type, MethodBinding, ClassSuccessResponse, ClassErrorResponse); err == nil {
-			_, ok := b.requests.Load(message.Header.TransactionID)
+			v, ok := b.requests.Load(message.Header.TransactionID)
 			if !ok {
-				//b.Logger.Errorf("no request found for transaction ID: %x", message.Header.TransactionID)
 				continue
 			}
-			b.HandleResponse(message, message.Header.TransactionID)
+			rc := v.(*requestContext)
+			select {
+			case <-rc.done:
+				// request context is done (timed out)
+				continue
+			default:
+			}
+			rc.cancel()
+			rc.result, rc.err = b.HandleResponse(message, message.Header.TransactionID)
 		}
 	}
 }
@@ -178,12 +198,12 @@ func (b *BindingAgent) StopReceive() {
 	if !b.started.Load() || b.conn == nil {
 		return
 	}
-	// get the receive routine to stop now without closeing the connection
-	b.conn.SetReadDeadline(time.Now())
-	defer b.conn.SetReadDeadline(time.Time{})
+	// get the receive routine to stop now without closing the connection
+	_ = b.conn.SetReadDeadline(time.Now())
+	defer b.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 	// wait for the receive routine to stop
 	for b.started.Load() {
-		time.Sleep(time.Millisecond * 100)
+		runtime.Gosched()
 	}
 }
 
@@ -211,18 +231,17 @@ func ReceiveMessageFromConn(conn net.Conn) (message *Message, err error) {
 	if n < 20 {
 		return nil, fmt.Errorf("STUN message too short: %d bytes", n)
 	}
-	//rawMessage = rawMessage[:n]
+	// rawMessage = rawMessage[:n]
 	msgLen := binary.BigEndian.Uint16(rawMessage[2:4])
 	if msgLen > uint16(len(rawMessage)-20) {
 		rawMessage = append(rawMessage[:20], make([]byte, int(msgLen))...)
 	}
-	n, err = io.ReadFull(conn, rawMessage[20:20+msgLen])
+	_, err = io.ReadFull(conn, rawMessage[20:20+msgLen])
 	if err != nil {
 		return nil, err
 	}
 	message, err = DecodeMessage(rawMessage[:20+msgLen])
 	if err != nil {
-		//b.Logger.Errorf("Failed to parse STUN message from %s: %v", conn.RemoteAddr(), err)
 		return nil, ErrParseMessage
 	}
 	return message, nil
@@ -245,50 +264,35 @@ func (b *BindingAgent) SendRequest(waitForResponse bool) (result *BindingResult,
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	b.logger()("trace", fmt.Sprintf("BIND: sent request with transaction ID: %x", request.Header.TransactionID))
+	if !b.started.Load() {
+		return nil, fmt.Errorf("binding agent is not started")
+	}
 
-	if !waitForResponse || b.started.Load() {
-		b.requests.Store(request.Header.TransactionID, nil)
+	if !waitForResponse {
 		return
 	}
 
-	// Read response
-	var (
-		stunResponse *Message
-		stop         bool
-	)
+	b.logger()("trace", fmt.Sprintf("BIND: sent request with transaction ID: %x", request.Header.TransactionID))
 
-	for !stop {
-		b.conn.SetReadDeadline(time.Now().Add(stunTimeout))
-		stunResponse, err = ReceiveMessageFromConn(b.conn)
-		b.conn.SetReadDeadline(time.Time{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to read message: %w", err)
-		}
+	ctx, cancel := context.WithTimeoutCause(context.Background(), stunTimeout, context.DeadlineExceeded)
 
-		if MessageMethod(stunResponse.Header.Type) != MethodBinding {
-			// ignore non-binding messages
-			continue
-		}
+	rc := &requestContext{done: ctx.Done(), cancel: cancel}
+	b.requests.Store(request.Header.TransactionID, rc)
 
-		switch {
-		case IsErrorResponseType(stunResponse.Header.Type):
-			return b.HandleResponse(stunResponse, request.Header.TransactionID)
-		case IsRequestType(stunResponse.Header.Type):
-			if stunResponse.Header.TransactionID != request.Header.TransactionID {
-				// RFC 8445 Section 7.2.2
-				// If the server receives a Binding Request, it MUST respond with a Binding Response
-				b.HandleRequest(stunResponse)
-				continue
-			}
-		case IsSuccessResponseType(stunResponse.Header.Type):
-			stop = true
-		default:
-			return nil, fmt.Errorf("unexpected STUN message type: 0x%x", stunResponse.Header.Type)
-		}
+	defer func() {
+		b.requests.Delete(request.Header.TransactionID)
+	}()
+
+	<-ctx.Done()
+	if ctx.Err() != nil && ctx.Err() != context.Canceled {
+		err = ctx.Err()
+		return nil, err
 	}
 
-	return b.HandleResponse(stunResponse, request.Header.TransactionID)
+	result = rc.result
+	err = rc.err
+
+	return
 }
 
 // HandleResponse parses a STUN response and returns the binding result.
