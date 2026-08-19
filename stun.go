@@ -1,18 +1,16 @@
-/*
-Copyright 2026 Riccardo Raccuia
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2026 Riccardo Raccuia
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package stun
 
@@ -225,10 +223,10 @@ func CreateXorMappedAddress(addr net.Addr, txID [12]byte) ([]byte, error) {
 	switch family {
 	case 0x01:
 		addrBytes = ip.To4()
-		attrLength = 8 // 1 byte family + 1 byte port + 4 bytes IPv4
+		attrLength = 8 // 1 byte reserved + 1 byte family + 2 byte port + 4 bytes IPv4
 	case 0x02:
 		addrBytes = ip.To16()
-		attrLength = 20 // 1 byte family + 1 byte port + 16 bytes IPv6
+		attrLength = 20 // 1 byte reserved + 1 byte family + 2 byte port + 16 bytes IPv6
 	}
 
 	// Create XOR-MAPPED-ADDRESS attribute

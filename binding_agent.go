@@ -1,18 +1,16 @@
-/*
-Copyright 2026 Riccardo Raccuia
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2026 Riccardo Raccuia
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package stun
 
@@ -179,6 +177,7 @@ func (b *BindingAgent) receive() {
 		if err := ValidateMethodAndClass(message.Header.Type, MethodBinding, ClassSuccessResponse, ClassErrorResponse); err == nil {
 			v, ok := b.requests.Load(message.Header.TransactionID)
 			if !ok {
+				//b.Logger.Errorf("no request found for transaction ID: %x", message.Header.TransactionID)
 				continue
 			}
 			rc := v.(*requestContext)
@@ -198,9 +197,9 @@ func (b *BindingAgent) StopReceive() {
 	if !b.started.Load() || b.conn == nil {
 		return
 	}
-	// get the receive routine to stop now without closing the connection
-	_ = b.conn.SetReadDeadline(time.Now())
-	defer b.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+	// get the receive routine to stop now without closeing the connection
+	b.conn.SetReadDeadline(time.Now())
+	defer b.conn.SetReadDeadline(time.Time{})
 	// wait for the receive routine to stop
 	for b.started.Load() {
 		runtime.Gosched()
@@ -231,23 +230,24 @@ func ReceiveMessageFromConn(conn net.Conn) (message *Message, err error) {
 	if n < 20 {
 		return nil, fmt.Errorf("STUN message too short: %d bytes", n)
 	}
-	// rawMessage = rawMessage[:n]
+	//rawMessage = rawMessage[:n]
 	msgLen := binary.BigEndian.Uint16(rawMessage[2:4])
 	if msgLen > uint16(len(rawMessage)-20) {
 		rawMessage = append(rawMessage[:20], make([]byte, int(msgLen))...)
 	}
-	_, err = io.ReadFull(conn, rawMessage[20:20+msgLen])
+	n, err = io.ReadFull(conn, rawMessage[20:20+msgLen])
 	if err != nil {
 		return nil, err
 	}
 	message, err = DecodeMessage(rawMessage[:20+msgLen])
 	if err != nil {
+		//b.Logger.Errorf("Failed to parse STUN message from %s: %v", conn.RemoteAddr(), err)
 		return nil, ErrParseMessage
 	}
 	return message, nil
 }
 
-// SendRequest sends a STUN binding request and returns the mapped address
+// SendRequest sends a STUN binding request and returns the mapped address.
 func (b *BindingAgent) SendRequest(waitForResponse bool) (result *BindingResult, err error) {
 	if b.conn == nil {
 		return nil, fmt.Errorf("binding connection is not set")

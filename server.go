@@ -1,18 +1,16 @@
-/*
-Copyright 2026 Riccardo Raccuia
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2026 Riccardo Raccuia
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package stun
 
@@ -59,6 +57,10 @@ type ServerConfig struct {
 	// or where specific network configuration is required (e.g. reuseaddr, reuseport, etc.).
 	// When nil, the default TCP listener will be used (net.ListenTCP).
 	TCPListenFunc func(network string, listenAddr *net.TCPAddr) (*net.TCPListener, error)
+	// ProcessRequestFunc is a function that will be used to process all incoming STUN requests.
+	// It must return the response message and an error if the request processing failed.
+	// When nil, the default request processor will be used (ProcessBindingRequest).
+	ProcessRequestFunc func(message *Message, remoteAddr net.Addr) (*Message, error)
 }
 
 // NewServer creates a new STUN server instance with the given configuration.
@@ -73,6 +75,14 @@ func NewServer(config *ServerConfig) (*Server, error) {
 
 	if config.TCPListenFunc == nil {
 		config.TCPListenFunc = net.ListenTCP
+	}
+
+	if config.ProcessRequestFunc == nil {
+		config.ProcessRequestFunc = func(message *Message, remoteAddr net.Addr) (*Message, error) {
+			return ProcessBindingRequest(message, remoteAddr, nil, &BindingOptions{
+				RequireFingerprint: true,
+			})
+		}
 	}
 
 	s := &Server{
@@ -260,7 +270,7 @@ func (s *Server) stunListenTCP(listenAddr *net.TCPAddr) (net.Listener, error) {
 	return listener, nil
 }
 
-// getTCPListener returns a TCP listener for the given address and TLS configuration
+// getTCPListener returns a TCP listener for the given address and TLS configuration.
 func (s *Server) getTCPListener(listenAddr net.Addr) (net.Listener, error) {
 	listener, err := s.config.TCPListenFunc("tcp", listenAddr.(*net.TCPAddr))
 	if err != nil {
@@ -273,7 +283,7 @@ func (s *Server) getTCPListener(listenAddr net.Addr) (net.Listener, error) {
 	return tls.NewListener(listener, s.config.TLSConfig.Clone()), nil
 }
 
-// serverWorkerPoolItem represents work to be processed by worker goroutines
+// serverWorkerPoolItem represents work to be processed by worker goroutines.
 type serverWorkerPoolItem struct {
 	DataBuf    []byte             // Raw bytes received
 	DataLen    int                // Length of the data
@@ -281,7 +291,7 @@ type serverWorkerPoolItem struct {
 	WriteFn    func([]byte) error // Function to write response back
 }
 
-// serverWorkerPool manages a pool of workers to process STUN requests
+// serverWorkerPool manages a pool of workers to process STUN requests.
 type serverWorkerPool struct {
 	parent     *Server
 	workChan   chan serverWorkerPoolItem
@@ -290,7 +300,7 @@ type serverWorkerPool struct {
 	numWorkers int
 }
 
-// newServerWorkerPool creates a new worker pool with the specified number of workers
+// newServerWorkerPool creates a new worker pool with the specified number of workers.
 func newServerWorkerPool(parent *Server, numWorkers int) *serverWorkerPool {
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
@@ -303,7 +313,7 @@ func newServerWorkerPool(parent *Server, numWorkers int) *serverWorkerPool {
 	}
 }
 
-// Start begins processing work items with the configured number of workers
+// Start begins processing work items with the configured number of workers.
 func (wp *serverWorkerPool) Start(ctx context.Context) {
 	wp.parent.logger()("info", fmt.Sprintf("STUN: Starting worker pool with %d workers", wp.numWorkers))
 
@@ -316,7 +326,7 @@ func (wp *serverWorkerPool) Start(ctx context.Context) {
 	}
 }
 
-// Stop gracefully shuts down the worker pool
+// Stop gracefully shuts down the worker pool.
 func (wp *serverWorkerPool) Stop() {
 	wp.parent.logger()("info", "STUN: Stopping worker pool...")
 	wp.cancel()
@@ -325,7 +335,7 @@ func (wp *serverWorkerPool) Stop() {
 	wp.parent.logger()("info", "STUN: Worker pool stopped")
 }
 
-// Submit adds a work item to the queue
+// Submit adds a work item to the queue.
 func (wp *serverWorkerPool) Submit(item serverWorkerPoolItem) {
 	select {
 	case wp.workChan <- item:
@@ -336,7 +346,7 @@ func (wp *serverWorkerPool) Submit(item serverWorkerPoolItem) {
 	}
 }
 
-// worker processes work items from the channel
+// worker processes work items from the channel.
 func (wp *serverWorkerPool) worker(ctx context.Context, id int) {
 	defer wp.workerWg.Done()
 
@@ -355,7 +365,7 @@ func (wp *serverWorkerPool) worker(ctx context.Context, id int) {
 	}
 }
 
-// processWorkItem handles a single STUN request
+// processWorkItem handles a single STUN request.
 func (wp *serverWorkerPool) processWorkItem(workerID int, item serverWorkerPoolItem) {
 	wp.parent.logger()("debug", fmt.Sprintf("STUN: Worker %d processing %d bytes from %s", workerID, len(item.DataBuf), item.RemoteAddr))
 
@@ -366,9 +376,7 @@ func (wp *serverWorkerPool) processWorkItem(workerID int, item serverWorkerPoolI
 		return
 	}
 
-	response, err := ProcessBindingRequest(message, item.RemoteAddr, nil, &BindingOptions{
-		RequireFingerprint: true,
-	})
+	response, err := wp.parent.config.ProcessRequestFunc(message, item.RemoteAddr)
 	if err != nil {
 		wp.parent.logger()("error", fmt.Sprintf("STUN: Worker %d failed to process request from %s: %v", workerID, item.RemoteAddr, err))
 		return

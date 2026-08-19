@@ -1,18 +1,16 @@
-/*
-Copyright 2026 Riccardo Raccuia
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2026 Riccardo Raccuia
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package stun
 
@@ -27,6 +25,7 @@ const (
 	// STUN attributes
 
 	// Comprehension-required range (0x0000-0x7FFF)
+	AttrMappedAddress          uint16 = 0x0001
 	AttrUsername               uint16 = 0x0006
 	AttrMessageIntegrity       uint16 = 0x0008
 	AttrMessageIntegritySHA256 uint16 = 0x001C
@@ -36,8 +35,36 @@ const (
 	AttrXorMappedAddress       uint16 = 0x0020
 	// Comprehension-optional range (0x8000-0xFFFF)
 	AttrFingerprint uint16 = 0x8028
+	// RFC 5780 attributes
+	AttrChangeRequest uint16 = 0x0003 // RFC 5780 Section 7.2
+	AttrOtherAddress  uint16 = 0x802c // RFC 5780 Section 7.4
 
 	TLVPrefixLength = 4
+)
+
+var AttributeToString = map[uint16]string{
+	AttrMappedAddress:          "MAPPED-ADDRESS",
+	AttrUsername:               "USERNAME",
+	AttrMessageIntegrity:       "MESSAGE-INTEGRITY",
+	AttrMessageIntegritySHA256: "MESSAGE-INTEGRITY-SHA256",
+	AttrErrorCode:              "ERROR-CODE",
+	AttrRealm:                  "REALM",
+	AttrNonce:                  "NONCE",
+	AttrXorMappedAddress:       "XOR-MAPPED-ADDRESS",
+	AttrFingerprint:            "FINGERPRINT",
+	AttrICEPriority:            "ICE-PRIORITY",
+	AttrICEUseCandidate:        "USE-CANDIDATE",
+	AttrICEControlled:          "ICE-CONTROLLED",
+	AttrICEControlling:         "ICE-CONTROLLING",
+	AttrChangeRequest:          "CHANGE-REQUEST",
+	AttrOtherAddress:           "OTHER-ADDRESS",
+}
+
+const (
+	// RFC 5780 Section 7.2 CHANGE-REQUEST flag A: request response from alternate IP.
+	changeIPFlag uint32 = 0x00000004
+	// RFC 5780 Section 7.2 CHANGE-REQUEST flag B: request response from alternate port.
+	changePortFlag uint32 = 0x00000002
 )
 
 // Attribute is the generalized interface for all STUN attributes.
@@ -64,7 +91,11 @@ func DecodeAttributes(data []byte) ([]Attribute, error) {
 		attrType := binary.BigEndian.Uint16(data[offset : offset+2])
 		factory, ok := typeRegistry[attrType]
 		if !ok {
-			return nil, fmt.Errorf("unknown attribute type: 0x%04x", attrType)
+			//return nil, fmt.Errorf("unknown attribute type: 0x%04x", attrType)
+			// skip unknown attributes
+			attrLen := binary.BigEndian.Uint16(data[offset+2 : offset+4])
+			offset += int(attrLen) + 4
+			continue
 		}
 		attr := factory()
 
@@ -366,6 +397,85 @@ func (a *ErrorCodeAttr) SerializeTo(sb SerializeBuffer) error {
 		b[i] = 0
 	}*/
 	return nil
+}
+
+// MappedAddressAttr implements Attribute for MAPPED-ADDRESS (0x0001).
+// Value holds the raw attribute value (family, port, IP).
+// Implements the [Attribute] interface.
+type MappedAddressAttr struct {
+	Value []byte
+}
+
+func (a *MappedAddressAttr) DecodeFromBytes(b []byte) error {
+	if len(b) < 4 {
+		return errors.New("mapped address attribute too short")
+	}
+	attrType := binary.BigEndian.Uint16(b[0:2])
+	attrLen := binary.BigEndian.Uint16(b[2:4])
+	if attrType != AttrMappedAddress {
+		return fmt.Errorf("wrong attribute type: got 0x%04x, expected MAPPED-ADDRESS", attrType)
+	}
+	if attrLen != 8 && attrLen != 20 {
+		return fmt.Errorf("invalid mapped address length: %d", attrLen)
+	}
+	if int(attrLen) > len(b)-4 {
+		return errors.New("mapped address length exceeds buffer")
+	}
+	a.Value = make([]byte, attrLen)
+	copy(a.Value, b[4:4+attrLen])
+	return nil
+}
+
+func (a *MappedAddressAttr) GetType() uint16 { return AttrMappedAddress }
+func (a *MappedAddressAttr) SerializeLen() int {
+	return attrSerializedSize(uint16(len(a.Value)))
+}
+func (a *MappedAddressAttr) IsICE() bool { return false }
+func (a *MappedAddressAttr) SerializeTo(sb SerializeBuffer) error {
+	b := sb.Append(a.SerializeLen())
+	valueLen := uint16(len(a.Value))
+	binary.BigEndian.PutUint16(b[0:2], AttrMappedAddress)
+	binary.BigEndian.PutUint16(b[2:4], valueLen)
+	copy(b[4:], a.Value)
+	clear(b[4+len(a.Value):]) // clear padded bytes
+	return nil
+}
+
+func (a *MappedAddressAttr) DecodeMappedAddress() (net.IP, int, error) {
+	// decode the mapped address, ipv4 or ipv6
+	family := a.Value[1]
+	port := binary.BigEndian.Uint16(a.Value[2:4])
+	switch family {
+	case 0x01:
+		return net.IP(a.Value[4:8]), int(port), nil
+	case 0x02:
+		return net.IP(a.Value[4:20]), int(port), nil
+	default:
+		return nil, 0, fmt.Errorf("unsupported address family: %d", family)
+	}
+}
+
+// NewMappedAddressAttr creates a MAPPED-ADDRESS attribute.
+func NewMappedAddressAttr(addr net.IP, port int) *MappedAddressAttr {
+	family := byte(0x01) // IPv4
+	if addr.To4() == nil {
+		family = byte(0x02) // IPv6
+	}
+	attrLen := 8 // 1 byte reserved + 1 byte family + 2 byte port + 4 bytes IPv4
+	if family == 0x02 {
+		attrLen = 20 // 1 byte reserved + 1 byte family + 2 byte port + 16 bytes IPv6
+	}
+	attr := make([]byte, attrLen)
+	attr[0] = 0 // reserved
+	attr[1] = family
+	binary.BigEndian.PutUint16(attr[2:4], uint16(port))
+	switch family {
+	case 0x01:
+		copy(attr[4:8], addr.To4())
+	case 0x02:
+		copy(attr[4:20], addr.To16())
+	}
+	return &MappedAddressAttr{Value: attr}
 }
 
 // XorMappedAddressAttr implements Attribute for XOR-MAPPED-ADDRESS (0x0020).
@@ -704,8 +814,149 @@ func (a *UnknownAttr) SerializeTo(sb SerializeBuffer) error {
 	return nil
 }
 
+// ChangeRequestAttr implements Attribute for CHANGE-REQUEST (0x0003).
+// The attribute carries "change IP" (A) and "change port" (B) flags that
+// instruct the server to send the Binding Response from an alternate source
+// address and/or port (RFC 5780 Section 7.2).
+// Implements the [Attribute] interface.
+type ChangeRequestAttr struct {
+	Flags uint32
+}
+
+func (a *ChangeRequestAttr) DecodeFromBytes(b []byte) error {
+	if len(b) < 4 {
+		return errors.New("change-request attribute too short")
+	}
+	attrType := binary.BigEndian.Uint16(b[0:2])
+	attrLen := binary.BigEndian.Uint16(b[2:4])
+	if attrType != AttrChangeRequest {
+		return fmt.Errorf("wrong attribute type: got 0x%04x, expected CHANGE-REQUEST", attrType)
+	}
+	if attrLen != 4 {
+		return fmt.Errorf("invalid change-request length: %d", attrLen)
+	}
+	if int(attrLen) > len(b)-4 {
+		return errors.New("change-request attribute length exceeds buffer")
+	}
+	a.Flags = binary.BigEndian.Uint32(b[4 : 4+attrLen])
+	return nil
+}
+
+func (a *ChangeRequestAttr) GetType() uint16 { return AttrChangeRequest }
+func (a *ChangeRequestAttr) SerializeLen() int {
+	return attrSerializedSize(4)
+}
+func (a *ChangeRequestAttr) IsICE() bool { return false }
+
+// NewChangeRequestAttr creates a CHANGE-REQUEST attribute with the given flags.
+// Use changePortFlag for filtering test III and changeIPAndPortFlag for
+// filtering test II (RFC 5780 Section 4.4).
+func NewChangeRequestAttr(flags uint32) *ChangeRequestAttr {
+	return &ChangeRequestAttr{Flags: flags}
+}
+
+func (a *ChangeRequestAttr) SerializeTo(sb SerializeBuffer) error {
+	b := sb.Append(a.SerializeLen())
+	binary.BigEndian.PutUint16(b[0:2], AttrChangeRequest)
+	binary.BigEndian.PutUint16(b[2:4], 4)
+	binary.BigEndian.PutUint32(b[4:8], a.Flags)
+	return nil
+}
+
+// OtherAddressAttr implements Attribute for OTHER-ADDRESS (0x802c).
+// Value holds the raw transport address (family, port, IP) the server would use
+// when both CHANGE-REQUEST flags are set (RFC 5780 Section 7.4). The wire
+// format matches MAPPED-ADDRESS (RFC 5780 Section 7.1).
+// Implements the [Attribute] interface.
+type OtherAddressAttr struct {
+	Value []byte
+}
+
+func (a *OtherAddressAttr) DecodeFromBytes(b []byte) error {
+	if len(b) < 4 {
+		return errors.New("other-address attribute too short")
+	}
+	attrType := binary.BigEndian.Uint16(b[0:2])
+	attrLen := binary.BigEndian.Uint16(b[2:4])
+	if attrType != AttrOtherAddress {
+		return fmt.Errorf("wrong attribute type: got 0x%04x, expected OTHER-ADDRESS", attrType)
+	}
+	if attrLen != 8 && attrLen != 20 {
+		return fmt.Errorf("invalid other-address length: %d", attrLen)
+	}
+	if int(attrLen) > len(b)-4 {
+		return errors.New("other-address attribute length exceeds buffer")
+	}
+	a.Value = make([]byte, attrLen)
+	copy(a.Value, b[4:4+attrLen])
+	return nil
+}
+
+func (a *OtherAddressAttr) GetType() uint16 { return AttrOtherAddress }
+func (a *OtherAddressAttr) SerializeLen() int {
+	return attrSerializedSize(uint16(len(a.Value)))
+}
+func (a *OtherAddressAttr) IsICE() bool { return false }
+
+func (a *OtherAddressAttr) SerializeTo(sb SerializeBuffer) error {
+	b := sb.Append(a.SerializeLen())
+	valueLen := uint16(len(a.Value))
+	binary.BigEndian.PutUint16(b[0:2], AttrOtherAddress)
+	binary.BigEndian.PutUint16(b[2:4], valueLen)
+	copy(b[4:], a.Value)
+	clear(b[4+len(a.Value):])
+	return nil
+}
+
+// DecodeOtherAddress decodes Value into IP and port.
+func (a *OtherAddressAttr) DecodeOtherAddress() (net.IP, int, error) {
+	if len(a.Value) < 4 {
+		return nil, 0, errors.New("other-address value too short")
+	}
+	family := a.Value[1]
+	port := binary.BigEndian.Uint16(a.Value[2:4])
+	switch family {
+	case 0x01:
+		if len(a.Value) < 8 {
+			return nil, 0, errors.New("other-address IPv4 value too short")
+		}
+		return net.IP(a.Value[4:8]), int(port), nil
+	case 0x02:
+		if len(a.Value) < 20 {
+			return nil, 0, errors.New("other-address IPv6 value too short")
+		}
+		return net.IP(a.Value[4:20]), int(port), nil
+	default:
+		return nil, 0, fmt.Errorf("unsupported address family: %d", family)
+	}
+}
+
+// NewOtherAddressAttr creates a OTHER-ADDRESS attribute.
+func NewOtherAddressAttr(addr net.IP, port int) *OtherAddressAttr {
+	family := byte(0x01) // IPv4
+	if addr.To4() == nil {
+		family = byte(0x02) // IPv6
+	}
+	attrLen := 8 // 1 byte reserved + 1 byte family + 2 byte port + 4 bytes IPv4
+	if family == 0x02 {
+		attrLen = 20 // 1 byte reserved + 1 byte family + 2 byte port + 16 bytes IPv6
+	}
+	attr := make([]byte, attrLen)
+	attr[0] = 0 // reserved
+	attr[1] = family
+	binary.BigEndian.PutUint16(attr[2:4], uint16(port))
+	switch family {
+	case 0x01:
+		copy(attr[4:8], addr.To4())
+	case 0x02:
+		copy(attr[4:20], addr.To16())
+	}
+	return &OtherAddressAttr{Value: attr}
+}
+
 // typeRegistry maps attribute type to constructor for parseAttributes.
 var typeRegistry = map[uint16]func() Attribute{
+	AttrMappedAddress:          func() Attribute { return &MappedAddressAttr{} },
 	AttrUsername:               func() Attribute { return &UsernameAttr{} },
 	AttrMessageIntegrity:       func() Attribute { return &MessageIntegrityAttr{} },
 	AttrMessageIntegritySHA256: func() Attribute { return &MessageIntegritySHA256Attr{} },
@@ -718,4 +969,6 @@ var typeRegistry = map[uint16]func() Attribute{
 	AttrICEUseCandidate:        func() Attribute { return &ICEUseCandidateAttr{} },
 	AttrICEControlled:          func() Attribute { return &ICEControlledAttr{} },
 	AttrICEControlling:         func() Attribute { return &ICEControllingAttr{} },
+	AttrChangeRequest:          func() Attribute { return &ChangeRequestAttr{} },
+	AttrOtherAddress:           func() Attribute { return &OtherAddressAttr{} },
 }
