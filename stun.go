@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -162,10 +163,8 @@ func ValidateMethodAndClass(msgType uint16, expectedMethod Method, allowedClasse
 	}
 
 	class := MessageClass(msgType)
-	for _, allowedClass := range allowedClasses {
-		if class == allowedClass {
-			return nil
-		}
+	if slices.Contains(allowedClasses, class) {
+		return nil
 	}
 
 	if len(allowedClasses) == 0 {
@@ -245,12 +244,12 @@ func CreateXorMappedAddress(addr net.Addr, txID [12]byte) ([]byte, error) {
 	switch family {
 	case 0x01:
 		// IPv4: XOR with magic cookie
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			xorMappedAddr[4+i] = addrBytes[i] ^ magicCookieBytes[i]
 		}
 	case 0x02:
 		// IPv6: XOR with magic cookie and transaction ID
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			xorMappedAddr[4+i] = addrBytes[i] ^ magicCookieBytes[i]
 		}
 		for i := 4; i < 16; i++ {

@@ -15,7 +15,6 @@
 package stun
 
 import (
-	"context"
 	"net"
 	"testing"
 )
@@ -39,8 +38,7 @@ func TestServerUDPBindingRequest(t *testing.T) {
 	}
 	defer srv.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	listenAddr := &net.UDPAddr{IP: net.IPv4zero}
 	if err := srv.Listen(ctx, listenAddr); err != nil {
@@ -86,8 +84,7 @@ func TestServerTCPBindingRequest(t *testing.T) {
 	}
 	defer srv.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	listenAddr := &net.TCPAddr{IP: net.IPv4zero}
 	if err := srv.Listen(ctx, listenAddr); err != nil {

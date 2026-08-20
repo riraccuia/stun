@@ -551,7 +551,7 @@ func (a *XorMappedAddressAttr) DecodeXorMappedAddress(txID [12]byte) (net.IP, in
 			return nil, 0, errors.New("xor mapped address IPv4 value too short")
 		}
 		ip := make(net.IP, 4)
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			ip[i] = v[4+i] ^ byte(MagicCookie>>((3-i)*8))
 		}
 		return ip, port, nil
@@ -560,7 +560,7 @@ func (a *XorMappedAddressAttr) DecodeXorMappedAddress(txID [12]byte) (net.IP, in
 			return nil, 0, errors.New("xor mapped address IPv6 value too short")
 		}
 		ip := make(net.IP, 16)
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			ip[i] = v[4+i] ^ byte(MagicCookie>>((3-i)*8))
 		}
 		for i := 4; i < 16; i++ {
